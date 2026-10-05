@@ -73,7 +73,9 @@
 
 (defn finish
   [context method params result]
-  (cond (:error result) result
+  (cond (:error result) (if (= -32002 (get-in result [:error :code]))
+                          (assoc-in result [:error :code] -32602)
+                          result)
         (not (map? result)) (error -32603
                                    "Handler did not return an MCP result")
         (not (contains? #{nil "complete" "input_required"}

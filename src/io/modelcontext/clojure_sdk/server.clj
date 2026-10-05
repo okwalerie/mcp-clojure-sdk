@@ -161,7 +161,7 @@
                      :resource uri
                      :error :resource-not-found)
           (if (protocol/modern? params)
-            (protocol/error -32002 "Resource not found" {:uri uri})
+            (protocol/error -32602 "Resource not found" {:uri uri})
             {:error (mcp.errors/body :resource-not-found {:uri uri})})))))
 
 (defn- handle-list-prompts

@@ -119,12 +119,12 @@
   (let [context (server/create-context! {:name "test", :version "1"})]
     (doseq [[method extra code] [["tools/call" {:name "missing"} -32602]
                                  ["resources/read" {:uri "test://missing"}
-                                  -32002]
+                                  -32602]
                                  ["prompts/get" {:name "missing"} -32602]]]
       (is (= code
              (get-in (result! method context (merge params extra))
                      [:error :code]))))
-    (is (= -32002
+    (is (= -32602
            (get-in (protocol/finish {}
                                     "resources/read"
                                     params
