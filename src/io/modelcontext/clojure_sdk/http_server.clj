@@ -19,6 +19,7 @@
             [clojure.java.io :as io]
             [io.modelcontext.clojure-sdk.io-chan :as mcp.io-chan]
             [io.modelcontext.clojure-sdk.server :as core]
+            [io.modelcontext.clojure-sdk.modern-http :as modern-http]
             [io.pedestal.http :as http]
             [jsonrpc4clj.server :as jsonrpc.server]
             [me.vedang.logger.interface :as log])
@@ -155,9 +156,23 @@
   JSON-RPC response; notifications and responses are acknowledged with
   202 Accepted."
   [sessions context request]
-  (let [msg (mcp.io-chan/json-str->message (some-> (:body request)
-                                                   slurp))]
-    (cond (= :parse-error msg) (json-response 400
+  (let [msg (mcp.io-chan/json-str->message
+              (let [body (:body request)
+                    buffer (java.io.ByteArrayOutputStream.)
+                    bytes (byte-array 8192)]
+                (loop [total 0]
+                  (let [n (.read ^java.io.InputStream body bytes)]
+                    (if (= -1 n)
+                      (.toString buffer "UTF-8")
+                      (let [size (+ total n)]
+                        (when (> size mcp.io-chan/max-frame-bytes)
+                          (throw (ex-info "MCP request exceeds byte limit"
+                                          {:status 413})))
+                        (.write buffer bytes 0 n)
+                        (recur size)))))))]
+    (cond (modern-http/modern-request? request msg)
+            (modern-http/handle context request msg)
+          (= :parse-error msg) (json-response 400
                                               (error-body -32700 "Parse error"))
           (= "initialize" (:method msg))
             (let [session (create-session! sessions context)]
@@ -238,16 +253,36 @@
     :sessions - Atom of session-id -> session (each session contains the
                 jsonrpc :endpoint for server-initiated messages)
     :stop!    - Zero-arg fn that stops the server (see `stop!`)"
-  [spec {:keys [host port], :or {host "127.0.0.1", port 0}}]
+  [spec {:keys [host port allowed-origins], :or {host "127.0.0.1", port 0}}]
   (core/validate-spec! spec)
   (log/info :msg "[HTTP SERVER] Starting server...")
   (let [context (core/create-context! spec)
         sessions (atom {})
-        routes #{["/mcp" :post (partial handle-post sessions context)
+        guard (fn [handler]
+                (fn [request]
+                  (if (modern-http/origin-allowed? request allowed-origins)
+                    (try (handler request)
+                         (catch clojure.lang.ExceptionInfo ex
+                           (if-let [status (:status (ex-data ex))]
+                             {:status status,
+                              :body "MCP request exceeds byte limit"}
+                             (throw ex))))
+                    {:status 403, :body "Origin not allowed"})))
+        legacy-route
+          (fn [handler request]
+            (if (or (= "2026-07-28"
+                       (get-in request [:headers "mcp-protocol-version"]))
+                    (nil? (get-in request [:headers "mcp-session-id"])))
+              {:status 405, :headers {"Allow" "POST"}}
+              (handler request)))
+        routes #{["/mcp" :post (guard (partial handle-post sessions context))
                   :route-name ::mcp-post]
-                 ["/mcp" :get (partial handle-get sessions) :route-name
-                  ::mcp-get]
-                 ["/mcp" :delete (partial handle-delete sessions) :route-name
+                 ["/mcp" :get
+                  (guard (partial legacy-route (partial handle-get sessions)))
+                  :route-name ::mcp-get]
+                 ["/mcp" :delete
+                  (guard (partial legacy-route
+                                  (partial handle-delete sessions))) :route-name
                   ::mcp-delete]}
         runtime (-> {::http/routes routes,
                      ::http/type :jetty,

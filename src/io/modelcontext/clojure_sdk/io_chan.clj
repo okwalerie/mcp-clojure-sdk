@@ -3,7 +3,10 @@
             [camel-snake-kebab.extras :as cske]
             [clojure.core.async :as async]
             [clojure.java.io :as io]
-            [me.vedang.logger.interface :as log]))
+            [me.vedang.logger.interface :as log])
+  (:import [java.io ByteArrayOutputStream InputStream]
+           [java.nio ByteBuffer]
+           [java.nio.charset StandardCharsets CodingErrorAction]))
 
 (set! *warn-on-reflection* true)
 
@@ -44,6 +47,7 @@
            (log/error :fn :json-str->message :ex ex)
            :parse-error))))
 
+#_{:clj-kondo/ignore [:unused-private-var]}
 (defn ^:private read-message
   [^java.io.BufferedReader input]
   (try (let [content (.readLine input)]
@@ -56,8 +60,36 @@
 (defn ^:private write-message
   [^java.io.BufferedWriter output msg]
   (let [content (message->json-str msg)]
+    (when (> (alength (.getBytes ^String content StandardCharsets/UTF_8))
+             (* 4 1024 1024))
+      (throw (ex-info "MCP output frame exceeds byte limit" {})))
     (locking write-lock
       (doto output (.write ^String content) (.newLine) (.flush)))))
+
+(def max-frame-bytes (* 512 1024))
+(def max-output-bytes (* 4 1024 1024))
+
+(defn read-frame
+  "Read one bounded UTF-8 line. EOF and malformed input remain distinguishable."
+  [^InputStream input]
+  (let [buffer (ByteArrayOutputStream.)]
+    (loop []
+      (let [b (.read input)]
+        (cond (and (= -1 b) (zero? (.size buffer))) ::eof
+              (or (= -1 b) (= 10 b))
+                (try (let [decoder (doto (.newDecoder StandardCharsets/UTF_8)
+                                     (.onMalformedInput
+                                       CodingErrorAction/REPORT)
+                                     (.onUnmappableCharacter
+                                       CodingErrorAction/REPORT))]
+                       (str (.decode decoder
+                                     (ByteBuffer/wrap (.toByteArray buffer)))))
+                     (catch java.nio.charset.CharacterCodingException _
+                       ::bad-encoding))
+              (>= (.size buffer) max-frame-bytes)
+                (throw (ex-info "MCP input frame exceeds byte limit"
+                                {:limit max-frame-bytes}))
+              :else (do (.write buffer b) (recur)))))))
 
 (defn input-stream->input-chan
   "Returns a channel which will yield parsed messages that have been read off
@@ -70,19 +102,17 @@
   (let [messages (async/chan 1)]
     ;; close output when channel closes
     (async/thread
-      (with-open [reader (io/reader (io/input-stream input))]
-        (loop []
-          (let [msg (read-message reader)]
-            (cond
-              ;; input closed; also close channel
-              (= msg :parse-error) (do (log/debug :fn :input-stream->input-chan
-                                                  :error true
-                                                  :msg "Parse error or EOF")
-                                       (async/close! messages))
-              :else (do (log/trace :fn :input-stream->input-chan :msg msg)
-                        (when (async/>!! messages msg)
-                          ;; wait for next message
-                          (recur))))))))
+      (try (with-open [stream (io/input-stream input)]
+             (loop []
+               (let [frame (read-frame stream)]
+                 (when-not (= ::eof frame)
+                   (let [msg (if (= ::bad-encoding frame)
+                               :parse-error
+                               (json-str->message frame))]
+                     (log/trace :fn :input-stream->input-chan :msg msg)
+                     (when (async/>!! messages msg) (recur)))))))
+           (catch Exception ex (log/error :fn :input-stream->input-chan :ex ex))
+           (finally (async/close! messages))))
     messages))
 
 (defn output-stream->output-chan

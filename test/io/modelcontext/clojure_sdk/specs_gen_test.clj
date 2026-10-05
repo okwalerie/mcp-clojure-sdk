@@ -29,11 +29,13 @@
 (def gen-inputSchema-with-properties
   (gen/hash-map :type (gen/return "object")
                 :properties gen-properties
-                :required (gen/vector gen/string-alphanumeric)))
+                :required (gen/fmap #(vec (distinct %))
+                                    (gen/vector gen/string-alphanumeric))))
 
 (def gen-inputSchema-without-properties
   (gen/hash-map :type (gen/return "object")
-                :required (gen/vector gen/string-alphanumeric)))
+                :required (gen/fmap #(vec (distinct %))
+                                    (gen/vector gen/string-alphanumeric))))
 
 (def gen-inputSchema
   (gen/frequency [[9 gen-inputSchema-with-properties]

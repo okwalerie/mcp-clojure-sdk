@@ -57,7 +57,8 @@
  ;;
  ;; 1. Arrange deps alphabetically
  ;; 2. Write a short description about what the dep does
- :deps {;; HTTP client: Used by the Streamable HTTP transport client
+ :deps {com.networknt/json-schema-validator {:mvn/version "1.5.9"},
+        ;; HTTP client: Used by the Streamable HTTP transport client
         clj-http/clj-http {:mvn/version "3.13.0"},
         ;; STDIO / SSE transport implementation: Build on top of
         ;; jsonrpc4clj, the excellent library provided by the clojure-lsp

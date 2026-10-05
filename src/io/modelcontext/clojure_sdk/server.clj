@@ -3,6 +3,8 @@
             [io.modelcontext.clojure-sdk.mcp.errors :as mcp.errors]
             [io.modelcontext.clojure-sdk.specs :as specs]
             [io.modelcontext.clojure-sdk.protocol :as protocol]
+            [io.modelcontext.clojure-sdk.subscriptions :as subscriptions]
+            [io.modelcontext.clojure-sdk.schema :as schema]
             [jsonrpc4clj.coercer :as coercer]
             [jsonrpc4clj.server :as jsonrpc.server]
             [me.vedang.logger.interface :as log]
@@ -39,6 +41,13 @@
                :else (throw (ex-info "Unknown Conform Error" :args args#))))
        ~spec
        ~value)))
+
+(defmacro conform-result
+  [spec value]
+  `(let [result# ~value]
+     (if (or (:error result#) (= "input_required" (:resultType result#)))
+       result#
+       (conform-or-log ~spec result#))))
 
 ;;; Request Handlers
 
@@ -81,9 +90,12 @@
   {})
 
 (defn- handle-list-tools
-  [context _params]
+  [context params]
   (log/trace :fn :handle-list-tools)
-  {:tools (mapv :tool (sort-by (comp :name :tool) (vals @(:tools context))))})
+  (if (and (contains? params :cursor) (not= "" (:cursor params)))
+    (protocol/error -32602 "Unknown pagination cursor")
+    {:tools (mapv :tool
+              (sort-by (comp :name :tool) (vals @(:tools context))))}))
 
 (defn coerce-tool-response
   "Coerces a tool response into the expected format.
@@ -93,8 +105,10 @@
    Otherwise: if the response is not sequential, wraps it in a vector.
    If the tool has an outputSchema, adds structuredContent."
   [tool response]
-  (if (and (map? response) (or (contains? response :content)
-                                (= "input_required" (:resultType response))))
+  (if (and (map? response)
+           (or (contains? response :error)
+               (contains? response :content)
+               (= "input_required" (:resultType response))))
     response
     (let [response (if (sequential? response) (vec response) [response])
           base-map {:content response}]
@@ -111,8 +125,12 @@
   (let [tools @(:tools context)
         tool-name (:name params)
         arguments (:arguments params)]
-    (if-let [{:keys [tool handler]} (get tools tool-name)]
-      (try (coerce-tool-response tool (handler arguments))
+    (if-let [{:keys [tool handler input-validator]} (get tools tool-name)]
+      (try (if (and (protocol/modern? params)
+                    input-validator
+                    (not (schema/valid? input-validator (or arguments {}))))
+             (protocol/error -32602 "Tool arguments do not match inputSchema")
+             (coerce-tool-response tool (handler arguments)))
            (catch Exception e
              {:content [{:type "text", :text (str "Error: " (.getMessage e))}],
               :isError true}))
@@ -202,7 +220,9 @@
 ;;; Protocol: Requests and Notifications
 
 ;; [ref: initialize_request]
-(protocol/defrequest jsonrpc.server/receive-request "initialize"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "initialize"
   [_ context params]
   (log/trace :fn :receive-request :method "initialize" :params params)
   ;; [tag: log_bad_input_params]
@@ -221,7 +241,9 @@
   (conform-or-log ::specs/initialized-notification params))
 
 ;; [ref: ping_request]
-(protocol/defrequest jsonrpc.server/receive-request "ping"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "ping"
   [_ context params]
   (log/trace :fn :receive-request :method "ping" :params params)
   ;; [ref: log_bad_input_params]
@@ -230,17 +252,21 @@
        (handle-ping context)))
 
 ;; [ref: list_tools_request]
-(protocol/defrequest jsonrpc.server/receive-request "tools/list"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "tools/list"
   [_ context params]
   (log/trace :fn :receive-request :method "tools/list" :params params)
   ;; [ref: log_bad_input_params]
   (conform-or-log ::specs/list-tools-request params)
   (->> params
        (handle-list-tools context)
-       (conform-or-log ::specs/list-tools-response)))
+       (conform-result ::specs/list-tools-response)))
 
 ;; [ref: call_tool_request]
-(protocol/defrequest jsonrpc.server/receive-request "tools/call"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "tools/call"
   [_ context params]
   (log/trace :fn :receive-request :method "tools/call" :params params)
   ;; [ref: log_bad_input_params]
@@ -248,10 +274,12 @@
   ;; [ref: async_request_handlers]
   (eventually (->> params
                    (handle-call-tool context)
-                   (conform-or-log ::specs/call-tool-response))))
+                   (conform-result ::specs/call-tool-response))))
 
 ;; [ref: list_resources_request]
-(protocol/defrequest jsonrpc.server/receive-request "resources/list"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "resources/list"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/list" :params params)
   ;; [ref: log_bad_input_params]
@@ -261,7 +289,9 @@
        (conform-or-log ::specs/list-resources-response)))
 
 ;; [ref: read_resource_request]
-(protocol/defrequest jsonrpc.server/receive-request "resources/read"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "resources/read"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/read" :params params)
   ;; [ref: log_bad_input_params]
@@ -269,10 +299,12 @@
   ;; [ref: async_request_handlers]
   (eventually (->> params
                    (handle-read-resource context)
-                   (conform-or-log ::specs/read-resource-response))))
+                   (conform-result ::specs/read-resource-response))))
 
 ;; [ref: list_prompts_request]
-(protocol/defrequest jsonrpc.server/receive-request "prompts/list"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "prompts/list"
   [_ context params]
   (log/trace :fn :receive-request :method "prompts/list" :params params)
   ;; [ref: log_bad_input_params]
@@ -282,7 +314,9 @@
        (conform-or-log ::specs/list-prompts-response)))
 
 ;; [ref: get_prompt_request]
-(protocol/defrequest jsonrpc.server/receive-request "prompts/get"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "prompts/get"
   [_ context params]
   (log/trace :fn :receive-request :method "prompts/get" :params params)
   ;; [ref: log_bad_input_params]
@@ -290,10 +324,12 @@
   ;; [ref: async_request_handlers]
   (eventually (->> params
                    (handle-get-prompt context)
-                   (conform-or-log ::specs/get-prompt-response))))
+                   (conform-result ::specs/get-prompt-response))))
 
 ;; [ref: list_resource_templates_request]
-(protocol/defrequest jsonrpc.server/receive-request "resources/templates/list"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "resources/templates/list"
   [_ context params]
   (log/trace :fn :receive-request
              :method "resources/templates/list"
@@ -305,7 +341,9 @@
        (conform-or-log ::specs/list-resource-templates-response)))
 
 ;; [ref: resource_subscribe_unsubscribe_request]
-(protocol/defrequest jsonrpc.server/receive-request "resources/subscribe"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "resources/subscribe"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/subscribe" :params params)
   ;; [ref: log_bad_input_params]
@@ -313,7 +351,9 @@
   (handle-subscribe-resource context params))
 
 ;; [ref: resource_subscribe_unsubscribe_request]
-(protocol/defrequest jsonrpc.server/receive-request "resources/unsubscribe"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "resources/unsubscribe"
   [_ context params]
   (log/trace :fn :receive-request
              :method "resources/unsubscribe"
@@ -323,7 +363,9 @@
   (handle-unsubscribe-resource context params))
 
 ;; [ref: set_logging_level_request]
-(protocol/defrequest jsonrpc.server/receive-request "logging/setLevel"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "logging/setLevel"
   [_ context params]
   (log/trace :fn :receive-request :method "logging/setLevel" :params params)
   ;; [ref: log_bad_input_params]
@@ -331,7 +373,9 @@
   (handle-set-logging-level context params))
 
 ;; [ref: complete_request]
-(protocol/defrequest jsonrpc.server/receive-request "completion/complete"
+(protocol/defrequest
+  jsonrpc.server/receive-request
+  "completion/complete"
   [_ context params]
   (log/trace :fn :receive-request :method "completion/complete" :params params)
   ;; [ref: log_bad_input_params]
@@ -434,6 +478,7 @@
   - uri: The URI of the updated resource."
   [server context uri]
   (log/trace :fn :notify-resource-updated! :resource uri)
+  (subscriptions/publish! context "notifications/resources/updated" {:uri uri})
   (when (contains? @(:subscriptions context) uri)
     (jsonrpc.server/send-notification server
                                       "notifications/resources/updated"
@@ -584,11 +629,16 @@
      (fn [args-map] ... )
        * arg-map      - map with string keys representing the mcp tool call args"
   [context tool handler]
-  (swap! (:tools context) assoc (:name tool) {:tool tool, :handler handler})
+  (swap! (:tools context) assoc
+    (:name tool)
+    {:tool tool,
+     :handler handler,
+     :input-validator (schema/compile-schema (:inputSchema tool))})
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-tools-list-changed! server)))
+    (notify-tools-list-changed! server))
+  (subscriptions/publish! context "notifications/tools/list_changed" {}))
 
 (defn unregister-tool!
   "Remove the tool named `tool-name` from the MCP server. Notifies
@@ -605,7 +655,8 @@
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-tools-list-changed! server)))
+    (notify-tools-list-changed! server))
+  (subscriptions/publish! context "notifications/tools/list_changed" {}))
 
 (defn register-resource!
   "Register a resource against the MCP server.
@@ -634,7 +685,8 @@
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-resources-list-changed! server)))
+    (notify-resources-list-changed! server))
+  (subscriptions/publish! context "notifications/resources/list_changed" {}))
 
 (defn unregister-resource!
   "Remove the resource identified by `uri` from the MCP server. Notifies
@@ -651,7 +703,8 @@
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-resources-list-changed! server)))
+    (notify-resources-list-changed! server))
+  (subscriptions/publish! context "notifications/resources/list_changed" {}))
 
 (defn register-prompt!
   "Register a prompt against the MCP server.
@@ -679,7 +732,8 @@
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-prompts-list-changed! server)))
+    (notify-prompts-list-changed! server))
+  (subscriptions/publish! context "notifications/prompts/list_changed" {}))
 
 (defn unregister-prompt!
   "Remove the prompt named `prompt-name` from the MCP server. Notifies
@@ -696,7 +750,8 @@
   ;; [ref: auto_list_changed_notifications]
   (when-let [server (some-> (:server* context)
                             deref)]
-    (notify-prompts-list-changed! server)))
+    (notify-prompts-list-changed! server))
+  (subscriptions/publish! context "notifications/prompts/list_changed" {}))
 
 (defn register-resource-template!
   "Register a resource template against the MCP server.
@@ -759,6 +814,7 @@
    :resource-templates (atom {}),
    :prompts (atom {}),
    :subscriptions (atom #{}),
+   :listeners (atom {}),
    :log-level (atom nil),
    :completions (atom {}),
    :protocol (atom nil),
@@ -847,7 +903,8 @@
   (log/info :msg "[SERVER] Starting server...")
   ;; [ref: auto_list_changed_notifications]
   (when-let [server* (:server* context)] (reset! server* server))
-  (jsonrpc.server/start server context))
+  (when-let [context* (:mcp/context* server)] (reset! context* context))
+  (jsonrpc.server/start server (assoc context :server server)))
 
 (defn chan-server
   []
@@ -855,10 +912,13 @@
         output-ch (async/chan 3)]
     (jsonrpc.server/chan-server {:output-ch output-ch, :input-ch input-ch})))
 
-(protocol/defrequest jsonrpc.server/receive-request "server/discover"
-  [_ context _params]
-  {:supportedVersions (into [protocol/version] specs/supported-protocol-versions)
-   :capabilities @(:capabilities context)})
+(protocol/defrequest jsonrpc.server/receive-request
+                     "server/discover"
+                     [_ context _params]
+                     {:supportedVersions (into
+                                           [protocol/version]
+                                           specs/supported-protocol-versions),
+                      :capabilities @(:capabilities context)})
 
 (defmethod jsonrpc.server/receive-request :default
   [method context params]
@@ -866,3 +926,11 @@
     (or (protocol/validate-request params)
         (protocol/error -32601 (str "Unknown method: " method)))
     :jsonrpc4clj.server/method-not-found))
+
+(protocol/defrequest jsonrpc.server/receive-request
+                     "subscriptions/listen"
+                     [_ context params]
+                     (if (protocol/modern? params)
+                       (subscriptions/listen! context params)
+                       (protocol/error -32601
+                                       "Subscriptions require MCP 2026-07-28")))

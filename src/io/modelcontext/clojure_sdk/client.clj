@@ -2,6 +2,7 @@
   "MCP Client implementation."
   (:require [clojure.core.async :as async]
             [io.modelcontext.clojure-sdk.specs :as specs]
+            [io.modelcontext.clojure-sdk.client-protocol :as modern]
             [jsonrpc4clj.coercer :as coercer]
             [jsonrpc4clj.server :as jsonrpc.server]
             [me.vedang.logger.interface :as log]))
@@ -28,6 +29,7 @@
    :on-resource-list-changed (:on-resource-list-changed opts),
    :on-tool-list-changed (:on-tool-list-changed opts),
    :on-prompt-list-changed (:on-prompt-list-changed opts),
+   :elicitation-handler (:elicitation-handler opts),
    :sampling-handler (:sampling-handler opts)})
 
 (defn- get-client-capabilities
@@ -156,7 +158,7 @@
   "Send a ping to the server."
   [client]
   (log/trace :fn :ping!)
-  (jsonrpc.server/send-request (:endpoint client) "ping" {}))
+  (modern/request! client "ping" {}))
 
 ;;; ============================================================================
 ;;; MCP Protocol: Tools
@@ -167,7 +169,7 @@
   [client & {:keys [cursor]}]
   (log/trace :fn :list-tools! :cursor cursor)
   (let [params (cond-> {} cursor (assoc :cursor cursor))]
-    (jsonrpc.server/send-request (:endpoint client) "tools/list" params)))
+    (modern/request! client "tools/list" params)))
 
 (defn call-tool!
   "Call a tool on the server."
@@ -175,7 +177,7 @@
   (log/trace :fn :call-tool! :name name :arguments arguments)
   (let [params (cond-> {:name name} arguments (assoc :arguments arguments))]
     (conform-or-log ::specs/call-tool-request params)
-    (jsonrpc.server/send-request (:endpoint client) "tools/call" params)))
+    (modern/request! client "tools/call" params)))
 
 ;;; ============================================================================
 ;;; MCP Protocol: Resources
@@ -186,40 +188,34 @@
   [client & {:keys [cursor]}]
   (log/trace :fn :list-resources! :cursor cursor)
   (let [params (cond-> {} cursor (assoc :cursor cursor))]
-    (jsonrpc.server/send-request (:endpoint client) "resources/list" params)))
+    (modern/request! client "resources/list" params)))
 
 (defn list-resource-templates!
   "Request the list of resource templates from the server."
   [client & {:keys [cursor]}]
   (log/trace :fn :list-resource-templates! :cursor cursor)
   (let [params (cond-> {} cursor (assoc :cursor cursor))]
-    (jsonrpc.server/send-request (:endpoint client)
-                                 "resources/templates/list"
-                                 params)))
+    (modern/request! client "resources/templates/list" params)))
 
 (defn read-resource!
   "Read a resource from the server."
   [client uri]
   (log/trace :fn :read-resource! :uri uri)
-  (jsonrpc.server/send-request (:endpoint client) "resources/read" {:uri uri}))
+  (modern/request! client "resources/read" {:uri uri}))
 
 (defn subscribe!
   "Subscribe to updates for a resource."
   [client uri]
   (log/trace :fn :subscribe! :uri uri)
   (swap! (:state client) update :subscriptions conj uri)
-  (jsonrpc.server/send-request (:endpoint client)
-                               "resources/subscribe"
-                               {:uri uri}))
+  (modern/request! client "resources/subscribe" {:uri uri}))
 
 (defn unsubscribe!
   "Unsubscribe from updates for a resource."
   [client uri]
   (log/trace :fn :unsubscribe! :uri uri)
   (swap! (:state client) update :subscriptions disj uri)
-  (jsonrpc.server/send-request (:endpoint client)
-                               "resources/unsubscribe"
-                               {:uri uri}))
+  (modern/request! client "resources/unsubscribe" {:uri uri}))
 
 ;;; ============================================================================
 ;;; MCP Protocol: Prompts
@@ -230,7 +226,7 @@
   [client & {:keys [cursor]}]
   (log/trace :fn :list-prompts! :cursor cursor)
   (let [params (cond-> {} cursor (assoc :cursor cursor))]
-    (jsonrpc.server/send-request (:endpoint client) "prompts/list" params)))
+    (modern/request! client "prompts/list" params)))
 
 (defn get-prompt!
   "Get a prompt from the server."
@@ -238,7 +234,7 @@
   (log/trace :fn :get-prompt! :name name :arguments arguments)
   (let [params (cond-> {:name name} arguments (assoc :arguments arguments))]
     (conform-or-log ::specs/get-prompt-request params)
-    (jsonrpc.server/send-request (:endpoint client) "prompts/get" params)))
+    (modern/request! client "prompts/get" params)))
 
 ;;; ============================================================================
 ;;; MCP Protocol: Completion & Logging
@@ -251,17 +247,13 @@
   (let [params {:ref ref,
                 :argument {:name argument-name, :value argument-value}}]
     (conform-or-log ::specs/complete-request params)
-    (jsonrpc.server/send-request (:endpoint client)
-                                 "completion/complete"
-                                 params)))
+    (modern/request! client "completion/complete" params)))
 
 (defn set-logging-level!
   "Set the logging level for server messages."
   [client level]
   (log/trace :fn :set-logging-level! :level level)
-  (jsonrpc.server/send-request (:endpoint client)
-                               "logging/setLevel"
-                               {:level level}))
+  (modern/request! client "logging/setLevel" {:level level}))
 
 ;;; ============================================================================
 ;;; Client Notifications (Client -> Server)
@@ -475,3 +467,34 @@
   "Check if the client has completed initialization."
   [client]
   (:initialized? @(:state client)))
+
+(defn negotiate!
+  "Probe modern discovery, falling back only for a non-modern error or timeout.
+   :modern requires the modern protocol; :auto allows legacy fallback."
+  [client mode timeout-ms]
+  (let [result (try (jsonrpc.server/deref-or-cancel (modern/discover! client)
+                                                    timeout-ms
+                                                    ::timeout)
+                    (catch Exception e
+                      (or (ex-data e) {:error {:message (.getMessage e)}})))]
+    (cond (:supportedVersions result) (modern/adopt! client result)
+          (#{-32020 -32021 -32022} (get-in result [:error :code])) result
+          (= mode :modern) {:error {:code -32022,
+                                    :message
+                                    "Server does not support MCP 2026-07-28"}}
+          :else (let [legacy (jsonrpc.server/deref-or-cancel (initialize!
+                                                               client)
+                                                             timeout-ms
+                                                             ::timeout)]
+                  (if (= ::timeout legacy)
+                    {:error {:code -32603, :message "Initialization timed out"}}
+                    (if (:error legacy)
+                      legacy
+                      (do (process-initialize-result! client legacy)
+                          (initialized! client)
+                          legacy)))))))
+
+(defn listen!
+  "Open a modern subscription. Cancel the returned pending request to close it."
+  [client filter]
+  (modern/request! client "subscriptions/listen" {:notifications filter}))

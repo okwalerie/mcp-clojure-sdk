@@ -537,7 +537,8 @@
           valid-server-info {:name "test-server", :version "1.0.0"}
           invalid-tool-schema {:name "invalid-tool",
                                :description "Bad schema",
-                               :inputSchema {:invalid "schema"}, ; Invalid key
+                               :inputSchema {:type "invalid",
+                                             :invalid "schema"}, ; Invalid key
                                :handler identity}
           invalid-resource-missing-name
             {:uri "file:///invalid.txt",

@@ -1,5 +1,6 @@
 (ns io.modelcontext.clojure-sdk.specs
   (:require [clojure.spec.alpha :as s]
+            [io.modelcontext.clojure-sdk.schema :as schema]
             #_{:clj-kondo/ignore [:unused-namespace]}
             [jsonrpc4clj.coercer :as coercer]
             [jsonrpc4clj.errors :as jsonrpc.errors]))
@@ -501,7 +502,7 @@
 
 ;; Tool result for tools that do declare an outputSchema.
 ;; [tag: structured-content-should-match-output-schema-exactly]
-(s/def :call-tool-response/structuredContent (s/map-of string? any?))
+(s/def :call-tool-response/structuredContent any?)
 
 ;; If the Tool defines an outputSchema, `structuredContent` field MUST be
 ;; present in the result, and contain a JSON object that matches the schema.
@@ -540,12 +541,11 @@
 (s/def :tool/required (s/coll-of string?))
 (s/def :schema/type #{"object"})
 ;; A JSON Schema object defining the expected parameters for the tool.
-(s/def :tool/inputSchema
-  (s/keys :req-un [:schema/type] :opt-un [:tool/properties :tool/required]))
+(s/def :tool/inputSchema schema/valid-schema?)
 (s/def :tool/outputSchema ;; This is any? right now, but I'm copying
                           ;; over from inputSchema to keep it
                           ;; consistent
-  (s/keys :req-un [:schema/type] :opt-un [:tool/properties]))
+  schema/valid-schema?)
 ;; [tag: tool_annotations]
 ;;
 ;; Additional properties describing a Tool to clients. All properties

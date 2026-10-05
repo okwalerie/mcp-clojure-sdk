@@ -1,8 +1,8 @@
 (ns io.modelcontext.clojure-sdk.stdio-server
   (:require [clojure.core.async :as async]
             [io.modelcontext.clojure-sdk.server :as core]
+            [io.modelcontext.clojure-sdk.transport :as transport]
             [io.modelcontext.clojure-sdk.io-chan :as mcp.io-chan]
-            [jsonrpc4clj.server :as jsonrpc.server]
             [me.vedang.logger.interface :as log])
   (:refer-clojure :exclude [run!]))
 
@@ -34,11 +34,11 @@
         out (or out System/out)
         input-ch (mcp.io-chan/input-stream->input-chan in)
         output-ch (mcp.io-chan/output-stream->output-chan out)]
-    (jsonrpc.server/chan-server (assoc opts
-                                  :in in
-                                  :out out
-                                  :input-ch input-ch
-                                  :output-ch output-ch))))
+    (transport/chan-server (assoc opts
+                             :in in
+                             :out out
+                             :input-ch input-ch
+                             :output-ch output-ch))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn run!

@@ -91,34 +91,38 @@
   [client-info command args &
    {:keys [timeout-ms], :or {timeout-ms 30000}, :as opts}]
   (log/trace :fn :run! :client-info client-info :command command)
-  (try (let [client (apply stdio-client
-                      client-info
-                      command
-                      args
-                      (mapcat identity (dissoc opts :timeout-ms)))
-             _join (client/start! client)
-             init-pending (client/initialize! client)
-             init-result
-               (client/deref-or-cancel init-pending timeout-ms ::timeout)]
-         (cond (= ::timeout init-result)
-                 (do (log/error :fn :run! :error :timeout)
-                     (client/shutdown! client)
-                     {:error {:code -32603,
-                              :message "Initialization timed out"}})
-               (:error init-result) (do (log/error :fn :run! :error init-result)
-                                        (client/shutdown! client)
-                                        {:error (:error init-result)})
-               :else (do (client/process-initialize-result! client init-result)
-                         (client/initialized! client)
-                         (log/info :fn :run!
-                                   :msg "Client initialized successfully"
-                                   :server-info (:serverInfo init-result))
-                         {:client client})))
-       (catch Exception e
-         (log/error :fn :run! :exception e)
-         {:error {:code -32603,
-                  :message (.getMessage e),
-                  :data {:exception-class (.getName (class e))}}})))
+  (try
+    (let [client (apply stdio-client
+                   client-info
+                   command
+                   args
+                   (mapcat identity (dissoc opts :timeout-ms)))
+          _join (client/start! client)
+          init-pending (when-not (:protocol-mode opts)
+                         (client/initialize! client))
+          init-result
+            (if-let [mode (:protocol-mode opts)]
+              (client/negotiate! client mode timeout-ms)
+              (client/deref-or-cancel init-pending timeout-ms ::timeout))]
+      (cond (= ::timeout init-result)
+              (do (log/error :fn :run! :error :timeout)
+                  (client/shutdown! client)
+                  {:error {:code -32603, :message "Initialization timed out"}})
+            (:error init-result) (do (log/error :fn :run! :error init-result)
+                                     (client/shutdown! client)
+                                     {:error (:error init-result)})
+            :else (do (when-not (:protocol-mode opts)
+                        (client/process-initialize-result! client init-result)
+                        (client/initialized! client))
+                      (log/info :fn :run!
+                                :msg "Client initialized successfully"
+                                :server-info (:serverInfo init-result))
+                      {:client client})))
+    (catch Exception e
+      (log/error :fn :run! :exception e)
+      {:error {:code -32603,
+               :message (.getMessage e),
+               :data {:exception-class (.getName (class e))}}})))
 
 ;;; ============================================================================
 ;;; Cleanup
