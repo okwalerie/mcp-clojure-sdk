@@ -136,7 +136,9 @@
               :isError true}))
       (do
         (log/debug :fn :handle-call-tool :tool tool-name :error :tool-not-found)
-        {:error (mcp.errors/body :tool-not-found {:tool-name tool-name})}))))
+        (if (protocol/modern? params)
+          (protocol/error -32602 "Unknown tool" {:name tool-name})
+          {:error (mcp.errors/body :tool-not-found {:tool-name tool-name})})))))
 
 (defn- handle-list-resources
   [context _params]
@@ -158,7 +160,9 @@
       (do (log/debug :fn :handle-read-resource
                      :resource uri
                      :error :resource-not-found)
-          {:error (mcp.errors/body :resource-not-found {:uri uri})}))))
+          (if (protocol/modern? params)
+            (protocol/error -32002 "Resource not found" {:uri uri})
+            {:error (mcp.errors/body :resource-not-found {:uri uri})})))))
 
 (defn- handle-list-prompts
   [context _params]
@@ -178,8 +182,10 @@
       (do (log/debug :fn :handle-get-prompt
                      :prompt prompt-name
                      :error :prompt-not-found)
-          {:error (mcp.errors/body :prompt-not-found
-                                   {:prompt-name prompt-name})}))))
+          (if (protocol/modern? params)
+            (protocol/error -32602 "Unknown prompt" {:name prompt-name})
+            {:error (mcp.errors/body :prompt-not-found
+                                     {:prompt-name prompt-name})})))))
 
 (defn- handle-list-resource-templates
   [context _params]

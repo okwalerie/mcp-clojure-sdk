@@ -114,3 +114,19 @@
     (is (= -32602
            (get-in (result! "tools/list" context {:cursor "unknown"})
                    [:error :code])))))
+
+(deftest modern-errors-retain-defined-codes
+  (let [context (server/create-context! {:name "test", :version "1"})]
+    (doseq [[method extra code] [["tools/call" {:name "missing"} -32602]
+                                 ["resources/read" {:uri "test://missing"}
+                                  -32002]
+                                 ["prompts/get" {:name "missing"} -32602]]]
+      (is (= code
+             (get-in (result! method context (merge params extra))
+                     [:error :code]))))
+    (is (= -32002
+           (get-in (protocol/finish {}
+                                    "resources/read"
+                                    params
+                                    (protocol/error -32002 "Missing"))
+                   [:error :code])))))
