@@ -2,6 +2,7 @@
   (:require [clojure.core.async :as async]
             [io.modelcontext.clojure-sdk.mcp.errors :as mcp.errors]
             [io.modelcontext.clojure-sdk.specs :as specs]
+            [io.modelcontext.clojure-sdk.protocol :as protocol]
             [jsonrpc4clj.coercer :as coercer]
             [jsonrpc4clj.server :as jsonrpc.server]
             [me.vedang.logger.interface :as log]
@@ -82,7 +83,7 @@
 (defn- handle-list-tools
   [context _params]
   (log/trace :fn :handle-list-tools)
-  {:tools (mapv :tool (vals @(:tools context)))})
+  {:tools (mapv :tool (sort-by (comp :name :tool) (vals @(:tools context))))})
 
 (defn coerce-tool-response
   "Coerces a tool response into the expected format.
@@ -92,7 +93,8 @@
    Otherwise: if the response is not sequential, wraps it in a vector.
    If the tool has an outputSchema, adds structuredContent."
   [tool response]
-  (if (and (map? response) (contains? response :content))
+  (if (and (map? response) (or (contains? response :content)
+                                (= "input_required" (:resultType response))))
     response
     (let [response (if (sequential? response) (vec response) [response])
           base-map {:content response}]
@@ -132,7 +134,9 @@
       ;; A handler may return a single contents map or a sequence of
       ;; them (a resource can have multiple contents per the schema).
       (let [result (handler uri)]
-        {:contents (if (sequential? result) (vec result) [result])})
+        (if (= "input_required" (:resultType result))
+          result
+          {:contents (if (sequential? result) (vec result) [result])}))
       (do (log/debug :fn :handle-read-resource
                      :resource uri
                      :error :resource-not-found)
@@ -198,7 +202,7 @@
 ;;; Protocol: Requests and Notifications
 
 ;; [ref: initialize_request]
-(defmethod jsonrpc.server/receive-request "initialize"
+(protocol/defrequest jsonrpc.server/receive-request "initialize"
   [_ context params]
   (log/trace :fn :receive-request :method "initialize" :params params)
   ;; [tag: log_bad_input_params]
@@ -217,7 +221,7 @@
   (conform-or-log ::specs/initialized-notification params))
 
 ;; [ref: ping_request]
-(defmethod jsonrpc.server/receive-request "ping"
+(protocol/defrequest jsonrpc.server/receive-request "ping"
   [_ context params]
   (log/trace :fn :receive-request :method "ping" :params params)
   ;; [ref: log_bad_input_params]
@@ -226,7 +230,7 @@
        (handle-ping context)))
 
 ;; [ref: list_tools_request]
-(defmethod jsonrpc.server/receive-request "tools/list"
+(protocol/defrequest jsonrpc.server/receive-request "tools/list"
   [_ context params]
   (log/trace :fn :receive-request :method "tools/list" :params params)
   ;; [ref: log_bad_input_params]
@@ -236,7 +240,7 @@
        (conform-or-log ::specs/list-tools-response)))
 
 ;; [ref: call_tool_request]
-(defmethod jsonrpc.server/receive-request "tools/call"
+(protocol/defrequest jsonrpc.server/receive-request "tools/call"
   [_ context params]
   (log/trace :fn :receive-request :method "tools/call" :params params)
   ;; [ref: log_bad_input_params]
@@ -247,7 +251,7 @@
                    (conform-or-log ::specs/call-tool-response))))
 
 ;; [ref: list_resources_request]
-(defmethod jsonrpc.server/receive-request "resources/list"
+(protocol/defrequest jsonrpc.server/receive-request "resources/list"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/list" :params params)
   ;; [ref: log_bad_input_params]
@@ -257,7 +261,7 @@
        (conform-or-log ::specs/list-resources-response)))
 
 ;; [ref: read_resource_request]
-(defmethod jsonrpc.server/receive-request "resources/read"
+(protocol/defrequest jsonrpc.server/receive-request "resources/read"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/read" :params params)
   ;; [ref: log_bad_input_params]
@@ -268,7 +272,7 @@
                    (conform-or-log ::specs/read-resource-response))))
 
 ;; [ref: list_prompts_request]
-(defmethod jsonrpc.server/receive-request "prompts/list"
+(protocol/defrequest jsonrpc.server/receive-request "prompts/list"
   [_ context params]
   (log/trace :fn :receive-request :method "prompts/list" :params params)
   ;; [ref: log_bad_input_params]
@@ -278,7 +282,7 @@
        (conform-or-log ::specs/list-prompts-response)))
 
 ;; [ref: get_prompt_request]
-(defmethod jsonrpc.server/receive-request "prompts/get"
+(protocol/defrequest jsonrpc.server/receive-request "prompts/get"
   [_ context params]
   (log/trace :fn :receive-request :method "prompts/get" :params params)
   ;; [ref: log_bad_input_params]
@@ -289,7 +293,7 @@
                    (conform-or-log ::specs/get-prompt-response))))
 
 ;; [ref: list_resource_templates_request]
-(defmethod jsonrpc.server/receive-request "resources/templates/list"
+(protocol/defrequest jsonrpc.server/receive-request "resources/templates/list"
   [_ context params]
   (log/trace :fn :receive-request
              :method "resources/templates/list"
@@ -301,7 +305,7 @@
        (conform-or-log ::specs/list-resource-templates-response)))
 
 ;; [ref: resource_subscribe_unsubscribe_request]
-(defmethod jsonrpc.server/receive-request "resources/subscribe"
+(protocol/defrequest jsonrpc.server/receive-request "resources/subscribe"
   [_ context params]
   (log/trace :fn :receive-request :method "resources/subscribe" :params params)
   ;; [ref: log_bad_input_params]
@@ -309,7 +313,7 @@
   (handle-subscribe-resource context params))
 
 ;; [ref: resource_subscribe_unsubscribe_request]
-(defmethod jsonrpc.server/receive-request "resources/unsubscribe"
+(protocol/defrequest jsonrpc.server/receive-request "resources/unsubscribe"
   [_ context params]
   (log/trace :fn :receive-request
              :method "resources/unsubscribe"
@@ -319,7 +323,7 @@
   (handle-unsubscribe-resource context params))
 
 ;; [ref: set_logging_level_request]
-(defmethod jsonrpc.server/receive-request "logging/setLevel"
+(protocol/defrequest jsonrpc.server/receive-request "logging/setLevel"
   [_ context params]
   (log/trace :fn :receive-request :method "logging/setLevel" :params params)
   ;; [ref: log_bad_input_params]
@@ -327,7 +331,7 @@
   (handle-set-logging-level context params))
 
 ;; [ref: complete_request]
-(defmethod jsonrpc.server/receive-request "completion/complete"
+(protocol/defrequest jsonrpc.server/receive-request "completion/complete"
   [_ context params]
   (log/trace :fn :receive-request :method "completion/complete" :params params)
   ;; [ref: log_bad_input_params]
@@ -850,3 +854,15 @@
   (let [input-ch (async/chan 3)
         output-ch (async/chan 3)]
     (jsonrpc.server/chan-server {:output-ch output-ch, :input-ch input-ch})))
+
+(protocol/defrequest jsonrpc.server/receive-request "server/discover"
+  [_ context _params]
+  {:supportedVersions (into [protocol/version] specs/supported-protocol-versions)
+   :capabilities @(:capabilities context)})
+
+(defmethod jsonrpc.server/receive-request :default
+  [method context params]
+  (if (and (:server-info context) (protocol/modern? params))
+    (or (protocol/validate-request params)
+        (protocol/error -32601 (str "Unknown method: " method)))
+    :jsonrpc4clj.server/method-not-found))

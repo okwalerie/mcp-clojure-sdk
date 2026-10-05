@@ -1,6 +1,5 @@
 (ns io.modelcontext.clojure-sdk.io-chan
   (:require [babashka.json :as json]
-            [camel-snake-kebab.core :as csk]
             [camel-snake-kebab.extras :as cske]
             [clojure.core.async :as async]
             [clojure.java.io :as io]
@@ -20,7 +19,9 @@
   "Convert keywords to camelCase strings, but preserve capitalization of things
   that are already strings."
   [k]
-  (cond-> k (keyword? k) csk/->camelCaseString))
+  (if (and (keyword? k) (namespace k))
+    (str (namespace k) "/" (name k))
+    (if (keyword? k) (name k) k)))
 
 (defn message->json-str
   "Serialize an MCP message map to a JSON string, converting keyword keys

@@ -940,3 +940,21 @@
 (defn valid-server-spec? [spec] (s/valid? ::server-spec spec))
 
 (defn explain-server-spec [spec] (s/explain-data ::server-spec spec))
+
+;; MCP 2026-07-28 metadata is deliberately namespaced and supplied per request.
+(s/def :io.modelcontextprotocol/protocolVersion string?)
+(s/def :io.modelcontextprotocol/clientCapabilities map?)
+(s/def :io.modelcontextprotocol/clientInfo map?)
+(s/def ::modern-meta
+  (s/keys :req [:io.modelcontextprotocol/protocolVersion
+                :io.modelcontextprotocol/clientCapabilities]
+          :opt [:io.modelcontextprotocol/clientInfo]))
+(s/def :modern/_meta ::modern-meta)
+(s/def ::modern-request-params (s/keys :req-un [:modern/_meta]))
+(s/def :mrtr/resultType #{"input_required"})
+(s/def :mrtr/inputRequests (s/map-of string? map?))
+(s/def :mrtr/requestState string?)
+(s/def ::input-required-result
+  (s/and (s/keys :req-un [:mrtr/resultType]
+                 :opt-un [:mrtr/inputRequests :mrtr/requestState])
+         #(or (contains? % :inputRequests) (contains? % :requestState))))
